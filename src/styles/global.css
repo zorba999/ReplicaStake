@@ -1453,3 +1453,16 @@ button {
 .card__value .tag:last-child {
   white-space: normal;
 }
+
+.btn--warn {
+  color: var(--stamp-red);
+  border-color: var(--stamp-red);
+}
+
+.btn--warn::after {
+  background: var(--stamp-red);
+}
+
+.wallet-option img {
+  border-radius: 3px;
+}

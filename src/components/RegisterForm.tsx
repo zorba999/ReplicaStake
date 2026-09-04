@@ -65,6 +65,10 @@ export default function RegisterForm({ onRegistered, credits, faucetUsed, onFauc
       setError("Connect a wallet first.");
       return;
     }
+    if (wallet.wrongNetwork) {
+      setError("Your wallet is on another network — switch it to StudioNet first.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {

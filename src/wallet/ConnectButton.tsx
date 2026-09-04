@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { gsap } from "../anim/motion";
-import { CREDIT_SYMBOL } from "../lib/config";
+import { CHAIN, CREDIT_SYMBOL } from "../lib/config";
 import { shortAddress } from "../lib/format";
 import { logOk } from "../lib/log";
 import { useWallet } from "./WalletContext";
@@ -43,22 +43,29 @@ export default function ConnectButton({ credits, onFaucet, faucetBusy, faucetUse
   }, [open]);
 
   const connected = wallet.kind !== "none";
+  const label = wallet.connecting
+    ? "connecting…"
+    : wallet.wrongNetwork
+      ? "wrong network"
+      : connected
+        ? `${shortAddress(wallet.address)}${credits ? ` · ${credits} ${CREDIT_SYMBOL}` : ""}`
+        : "connect";
 
   return (
     <div className="wallet-pill" ref={wrapRef}>
       <button
         type="button"
-        className={connected ? "btn btn--sm" : "btn btn--sm btn--solid"}
+        className={
+          wallet.wrongNetwork
+            ? "btn btn--sm btn--warn"
+            : connected
+              ? "btn btn--sm"
+              : "btn btn--sm btn--solid"
+        }
         onClick={() => setOpen((value) => !value)}
         disabled={wallet.connecting}
       >
-        <span>
-          {wallet.connecting
-            ? "connecting…"
-            : connected
-              ? `${shortAddress(wallet.address)}${credits ? ` · ${credits} ${CREDIT_SYMBOL}` : ""}`
-              : "connect"}
-        </span>
+        <span>{label}</span>
       </button>
 
       {open && (
@@ -69,11 +76,14 @@ export default function ConnectButton({ credits, onFaucet, faucetBusy, faucetUse
                 StudioNet is gasless, so a throwaway session key is enough to stake, submit
                 and adjudicate. Nothing here is worth real money.
               </p>
+
               <button
                 type="button"
                 className="wallet-option"
                 onClick={() => {
-                  void wallet.connect("burner").then(() => setOpen(false));
+                  // Close only on success: a failed connect must leave the
+                  // menu open so its error is actually readable.
+                  void wallet.connectBurner().then((ok) => ok && setOpen(false));
                 }}
               >
                 <b>Session key</b>
@@ -81,31 +91,69 @@ export default function ConnectButton({ credits, onFaucet, faucetBusy, faucetUse
                   Generated in your browser, kept in localStorage. Instant, no extension.
                 </span>
               </button>
-              <button
-                type="button"
-                className="wallet-option"
-                onClick={() => {
-                  void wallet.connect("metamask").then(() => setOpen(false));
-                }}
-                disabled={!wallet.hasMetaMask}
-              >
-                <b>MetaMask</b>
-                <span>
-                  {wallet.hasMetaMask
-                    ? "Adds StudioNet and installs the GenLayer snap so MetaMask can sign GenLayer calldata."
-                    : "Not detected in this browser."}
-                </span>
-              </button>
+
+              {wallet.wallets.length === 0 && (
+                <div className="wallet-option" style={{ cursor: "default", opacity: 0.7 }}>
+                  <b>No EVM wallet detected</b>
+                  <span>
+                    Install MetaMask, Rabby, or any EIP-1193 wallet and reload — or just use
+                    the session key above.
+                  </span>
+                </div>
+              )}
+
+              {wallet.wallets.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className="wallet-option"
+                  onClick={() => {
+                    void wallet.connectInjected(option.id).then((ok) => ok && setOpen(false));
+                  }}
+                >
+                  <b>
+                    {option.icon && (
+                      <img
+                        src={option.icon}
+                        alt=""
+                        width={14}
+                        height={14}
+                        style={{ verticalAlign: "-2px", marginRight: 6 }}
+                      />
+                    )}
+                    {option.name}
+                  </b>
+                  <span>
+                    Adds {CHAIN.name} (chain {CHAIN.id}) and signs with your own account.
+                  </span>
+                </button>
+              ))}
             </>
           )}
 
           {connected && (
             <>
               <p>
-                Signing as <b>{shortAddress(wallet.address)}</b> via{" "}
-                {wallet.kind === "burner" ? "a browser session key" : "MetaMask"}.
+                Signing as <b>{shortAddress(wallet.address)}</b> via {wallet.walletName}.
               </p>
-              {onFaucet && (
+
+              {wallet.wrongNetwork && (
+                <>
+                  <div className="form__error">
+                    Your wallet is on another network. StudioNet transactions will fail until
+                    you switch.
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--solid"
+                    onClick={() => void wallet.switchNetwork()}
+                  >
+                    <span>switch to {CHAIN.name}</span>
+                  </button>
+                </>
+              )}
+
+              {onFaucet && !wallet.wrongNetwork && (
                 <button
                   type="button"
                   className="btn btn--sm"
@@ -121,6 +169,7 @@ export default function ConnectButton({ credits, onFaucet, faucetBusy, faucetUse
                   </span>
                 </button>
               )}
+
               {wallet.kind === "burner" && (
                 <button
                   type="button"
@@ -136,6 +185,7 @@ export default function ConnectButton({ credits, onFaucet, faucetBusy, faucetUse
                   <span>copy session key</span>
                 </button>
               )}
+
               <button
                 type="button"
                 className="btn btn--sm btn--ghost"

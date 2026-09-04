@@ -104,6 +104,10 @@ export default function ClaimDrawer({ claimId, onClose, onSettled }: Props) {
         setError("Connect a wallet first.");
         return;
       }
+      if (wallet.wrongNetwork) {
+        setError("Your wallet is on another network — switch it to StudioNet first.");
+        return;
+      }
       setBusy(label);
       setError("");
       try {
@@ -122,7 +126,7 @@ export default function ClaimDrawer({ claimId, onClose, onSettled }: Props) {
         setBusy("");
       }
     },
-    [wallet.client, claimId, load, onSettled],
+    [wallet.client, wallet.wrongNetwork, claimId, load, onSettled],
   );
 
   const isAuthor =

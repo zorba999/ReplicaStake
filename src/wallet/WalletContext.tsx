@@ -4,27 +4,25 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import { createAccount, createClient, generatePrivateKey } from "genlayer-js";
 
-import { BURNER_STORAGE_KEY, CHAIN, NETWORK_NAME } from "../lib/config";
+import { BURNER_STORAGE_KEY, CHAIN } from "../lib/config";
+import {
+  CHAIN_ID_HEX,
+  describeWalletError,
+  ensureChain,
+  getChainId,
+  listProviders,
+  startProviderDiscovery,
+  type EthereumProvider,
+  type WalletOption,
+} from "./providers";
 
-export type WalletKind = "none" | "burner" | "metamask";
-
-interface EthereumProvider {
-  request: (args: { method: string; params?: unknown[] | object }) => Promise<unknown>;
-  on?: (event: string, handler: (...args: never[]) => void) => void;
-  removeListener?: (event: string, handler: (...args: never[]) => void) => void;
-  isMetaMask?: boolean;
-}
-
-declare global {
-  interface Window {
-    ethereum?: EthereumProvider;
-  }
-}
+export type WalletKind = "none" | "burner" | "injected";
 
 interface WalletState {
   kind: WalletKind;
@@ -32,16 +30,21 @@ interface WalletState {
   client: unknown | null;
   connecting: boolean;
   error: string;
-  hasMetaMask: boolean;
-  connect: (kind: Exclude<WalletKind, "none">) => Promise<void>;
+  wallets: WalletOption[];
+  walletName: string;
+  wrongNetwork: boolean;
+  /** Resolves true only when the wallet is actually connected. */
+  connectBurner: () => Promise<boolean>;
+  connectInjected: (id?: string) => Promise<boolean>;
+  switchNetwork: () => Promise<void>;
   disconnect: () => void;
   exportBurnerKey: () => string | null;
-  resetBurner: () => void;
 }
 
 const WalletContext = createContext<WalletState | null>(null);
 
 const SESSION_KEY = "replicastake.wallet.kind";
+const SESSION_WALLET = "replicastake.wallet.id";
 
 function loadBurnerKey(): `0x${string}` {
   try {
@@ -59,86 +62,135 @@ function loadBurnerKey(): `0x${string}` {
   return fresh;
 }
 
+const remember = (key: string, value: string) => {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+};
+
+const forget = (key: string) => {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+};
+
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [kind, setKind] = useState<WalletKind>("none");
   const [address, setAddress] = useState("");
   const [client, setClient] = useState<unknown | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
-  const [hasMetaMask, setHasMetaMask] = useState(false);
+  const [wallets, setWallets] = useState<WalletOption[]>([]);
+  const [walletName, setWalletName] = useState("");
+  const [wrongNetwork, setWrongNetwork] = useState(false);
+  const providerRef = useRef<EthereumProvider | null>(null);
+
+  useEffect(() => startProviderDiscovery(setWallets), []);
 
   useEffect(() => {
-    setHasMetaMask(Boolean(window.ethereum));
+    setWallets(listProviders());
   }, []);
 
-  const connectBurner = useCallback(async () => {
-    const account = createAccount(loadBurnerKey());
-    const next = createClient({ chain: CHAIN, account });
-    setClient(next);
-    setAddress(account.address);
-    setKind("burner");
+  const connectBurner = useCallback(async (): Promise<boolean> => {
+    setConnecting(true);
+    setError("");
     try {
-      sessionStorage.setItem(SESSION_KEY, "burner");
-    } catch {
-      /* ignore */
+      const account = createAccount(loadBurnerKey());
+      setClient(createClient({ chain: CHAIN, account }));
+      setAddress(account.address);
+      setWalletName("Session key");
+      setWrongNetwork(false);
+      providerRef.current = null;
+      setKind("burner");
+      remember(SESSION_KEY, "burner");
+      return true;
+    } catch (caught) {
+      setError(describeWalletError(caught));
+      return false;
+    } finally {
+      setConnecting(false);
     }
   }, []);
 
-  const connectMetaMask = useCallback(async () => {
-    const provider = window.ethereum;
-    if (!provider) {
-      throw new Error("MetaMask was not detected in this browser.");
-    }
+  const attach = useCallback(async (option: WalletOption) => {
+    const provider = option.provider;
+
     const accounts = (await provider.request({ method: "eth_requestAccounts" })) as string[];
     const account = accounts?.[0];
-    if (!account) throw new Error("MetaMask returned no account.");
+    if (!account) throw new Error("Your wallet returned no account.");
 
-    const next = createClient({ chain: CHAIN, account: account as `0x${string}`, provider });
-    // Adds/switches the StudioNet chain and installs the GenLayer snap, which
-    // MetaMask needs in order to sign GenLayer's calldata format.
-    await (next as unknown as { connect: (n: string) => Promise<void> }).connect(NETWORK_NAME);
+    // The GenLayer snap that the SDK's own connect() installs is only needed by
+    // its snap-based signing client. Writes here go out as a plain
+    // eth_sendTransaction to the consensus contract, so requiring the snap
+    // would lock out every non-MetaMask EVM wallet for nothing.
+    await ensureChain(provider);
 
+    const next = createClient({
+      chain: CHAIN,
+      account: account as `0x${string}`,
+      provider,
+    });
+
+    providerRef.current = provider;
     setClient(next);
     setAddress(account);
-    setKind("metamask");
-    try {
-      sessionStorage.setItem(SESSION_KEY, "metamask");
-    } catch {
-      /* ignore */
-    }
+    setWalletName(option.name);
+    setWrongNetwork(false);
+    setKind("injected");
+    remember(SESSION_KEY, "injected");
+    remember(SESSION_WALLET, option.id);
   }, []);
 
-  const connect = useCallback(
-    async (target: Exclude<WalletKind, "none">) => {
+  const connectInjected = useCallback(
+    async (id?: string): Promise<boolean> => {
       setConnecting(true);
       setError("");
       try {
-        if (target === "burner") await connectBurner();
-        else await connectMetaMask();
+        const available = listProviders();
+        if (available.length === 0) {
+          throw new Error(
+            "No EVM wallet detected in this browser. Install MetaMask (or any EIP-1193 wallet), or use the session key.",
+          );
+        }
+        const option = (id && available.find((entry) => entry.id === id)) || available[0];
+        await attach(option);
+        return true;
       } catch (caught) {
-        const message = caught instanceof Error ? caught.message : String(caught);
-        setError(
-          /snap/i.test(message)
-            ? "MetaMask refused the GenLayer snap. Approve it in the MetaMask popup, or use the session key instead."
-            : message,
-        );
+        setError(describeWalletError(caught));
+        return false;
       } finally {
         setConnecting(false);
       }
     },
-    [connectBurner, connectMetaMask],
+    [attach],
   );
 
-  const disconnect = useCallback(() => {
-    setClient(null);
-    setAddress("");
-    setKind("none");
+  const switchNetwork = useCallback(async () => {
+    const provider = providerRef.current;
+    if (!provider) return;
     setError("");
     try {
-      sessionStorage.removeItem(SESSION_KEY);
-    } catch {
-      /* ignore */
+      await ensureChain(provider);
+      setWrongNetwork(false);
+    } catch (caught) {
+      setError(describeWalletError(caught));
     }
+  }, []);
+
+  const disconnect = useCallback(() => {
+    providerRef.current = null;
+    setClient(null);
+    setAddress("");
+    setWalletName("");
+    setWrongNetwork(false);
+    setKind("none");
+    setError("");
+    forget(SESSION_KEY);
+    forget(SESSION_WALLET);
   }, []);
 
   const exportBurnerKey = useCallback(() => {
@@ -149,39 +201,72 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const resetBurner = useCallback(() => {
-    try {
-      localStorage.removeItem(BURNER_STORAGE_KEY);
-    } catch {
-      /* ignore */
-    }
-    disconnect();
-  }, [disconnect]);
-
-  // A session key costs nothing to restore, so bring it back on reload.
-  // MetaMask is deliberately not auto-reconnected: that needs a user gesture.
+  // A session key costs nothing to restore. An injected wallet is only restored
+  // when it still reports an authorised account, so no popup is triggered.
   useEffect(() => {
     let stored: string | null = null;
+    let storedWallet: string | null = null;
     try {
       stored = sessionStorage.getItem(SESSION_KEY);
+      storedWallet = sessionStorage.getItem(SESSION_WALLET);
     } catch {
-      stored = null;
+      return;
     }
-    if (stored === "burner") void connectBurner();
-  }, [connectBurner]);
 
-  // Follow account switches in MetaMask instead of silently signing as someone else.
+    if (stored === "burner") {
+      void connectBurner();
+      return;
+    }
+    if (stored !== "injected") return;
+
+    let cancelled = false;
+    const restore = async () => {
+      const option =
+        listProviders().find((entry) => entry.id === storedWallet) ?? listProviders()[0];
+      if (!option) return;
+      try {
+        const accounts = (await option.provider.request({ method: "eth_accounts" })) as string[];
+        if (cancelled || !accounts?.length) return;
+        await attach(option);
+      } catch {
+        /* the user will reconnect by hand */
+      }
+    };
+    // Give EIP-6963 announcements a tick to land before we look for the wallet.
+    const timer = window.setTimeout(restore, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [connectBurner, attach]);
+
+  // Follow the wallet instead of silently signing as someone else, or on a
+  // chain where the consensus contract does not exist.
   useEffect(() => {
-    const provider = window.ethereum;
-    if (!provider?.on || kind !== "metamask") return;
-    const handler = (...args: never[]) => {
+    const provider = providerRef.current;
+    if (!provider?.on || kind !== "injected") return;
+
+    const onAccounts = (...args: never[]) => {
       const accounts = args[0] as unknown as string[];
       if (!accounts?.length) disconnect();
-      else void connectMetaMask();
+      else setAddress(accounts[0]);
     };
-    provider.on("accountsChanged", handler);
-    return () => provider.removeListener?.("accountsChanged", handler);
-  }, [kind, connectMetaMask, disconnect]);
+    const onChain = (...args: never[]) => {
+      const chainId = args[0] as unknown as string;
+      setWrongNetwork(chainId?.toLowerCase() !== CHAIN_ID_HEX);
+    };
+
+    provider.on("accountsChanged", onAccounts);
+    provider.on("chainChanged", onChain);
+    void getChainId(provider)
+      .then((chainId) => setWrongNetwork(chainId?.toLowerCase() !== CHAIN_ID_HEX))
+      .catch(() => {});
+
+    return () => {
+      provider.removeListener?.("accountsChanged", onAccounts);
+      provider.removeListener?.("chainChanged", onChain);
+    };
+  }, [kind, address, disconnect]);
 
   const value = useMemo<WalletState>(
     () => ({
@@ -190,11 +275,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       client,
       connecting,
       error,
-      hasMetaMask,
-      connect,
+      wallets,
+      walletName,
+      wrongNetwork,
+      connectBurner,
+      connectInjected,
+      switchNetwork,
       disconnect,
       exportBurnerKey,
-      resetBurner,
     }),
     [
       kind,
@@ -202,11 +290,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       client,
       connecting,
       error,
-      hasMetaMask,
-      connect,
+      wallets,
+      walletName,
+      wrongNetwork,
+      connectBurner,
+      connectInjected,
+      switchNetwork,
       disconnect,
       exportBurnerKey,
-      resetBurner,
     ],
   );
 

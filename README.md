@@ -102,16 +102,31 @@ only by `scripts/`.
 
 ## The wallet adapter
 
-`src/wallet/WalletContext.tsx` exposes two connectors behind one interface, because
-StudioNet's gasless design makes a zero-friction path genuinely possible:
+`src/wallet/` exposes two connectors behind one interface, because StudioNet's gasless
+design makes a zero-friction path genuinely possible:
 
 - **Session key** — a keypair generated in the browser and kept in `localStorage`. It
   signs locally through viem. No extension, no popup, no funding step. This is the
   default path for anyone trying the demo.
-- **MetaMask** — `createClient({ chain: studionet, account, provider: window.ethereum })`
-  followed by `client.connect("studionet")`, which adds the chain and installs the
-  GenLayer snap that MetaMask needs in order to sign GenLayer's calldata format. The
-  menu tells the user that up front rather than failing silently.
+- **Any EIP-1193 wallet** — discovered over **EIP-6963**, so MetaMask, Rabby, Brave,
+  Coinbase Wallet and the rest are all listed by name instead of fighting over a single
+  `window.ethereum` slot (with a legacy fallback for wallets that do not announce). The
+  connect flow is `eth_requestAccounts` → switch to chain `61999`, adding it only if the
+  wallet reports 4902 → `createClient({ chain: studionet, account, provider })`.
+
+**Why not the SDK's `client.connect()`.** It hard-requires installing the
+`npm:genlayer-wallet-plugin` MetaMask Snap, which fails on every non-MetaMask wallet
+(`wallet_getSnaps` → `-32601`) and prompts for nothing this dApp uses: the snap belongs
+to the SDK's separate `metamaskClient()` signer, whereas `writeContract` on an injected
+account goes out as a plain `eth_sendTransaction` to the consensus contract. Doing the
+chain handshake here instead keeps every EVM wallet working.
+
+Wallets reject with plain `{ code, message }` objects rather than `Error` instances, so
+`describeWalletError()` reads the EIP-1193 code first (4001 rejected, 4902 unknown chain,
+-32002 request pending, -32601 unsupported method) and only then falls back to whatever
+message-shaped field the wallet populated. `chainChanged` and `accountsChanged` are
+followed live: landing on the wrong network flips the header to a switch prompt and
+blocks writes rather than letting them fail at the RPC.
 
 Reads never need a wallet: `src/lib/contract.ts` keeps a separate account-less client so
 the registry is fully browsable before anyone connects.

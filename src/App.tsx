@@ -38,7 +38,7 @@ export default function App() {
   }, []);
 
   const claimFaucet = useCallback(async () => {
-    if (!wallet.client) return;
+    if (!wallet.client || wallet.wrongNetwork) return;
     setFaucetBusy(true);
     try {
       log("claim_credits: requesting grant");
@@ -53,7 +53,7 @@ export default function App() {
     } finally {
       setFaucetBusy(false);
     }
-  }, [wallet.client, registry]);
+  }, [wallet.client, wallet.wrongNetwork, registry]);
 
   return (
     <>
