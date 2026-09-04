@@ -86,17 +86,24 @@ The app is a static Vite SPA, so it deploys with no adapter and no server runtim
 1. Push the repo (`.env` is gitignored — **keep it that way**).
 2. Import it on Vercel. The preset is detected from `vercel.json`: framework `vite`,
    build `npm run build`, output `dist`.
-3. Add one environment variable:
+3. Open **Environment Variables**. Vercel pre-fills the list from `.env.example`, so it
+   will offer `DEPLOYER_PRIVATE_KEY` and `REPLICATOR_PRIVATE_KEY` too — **remove both**.
+   Keep exactly one:
 
    ```
    VITE_CONTRACT_ADDRESS = 0xC0Ef3484ef7c0418BFe22525D95011911d213C23
    ```
 
-4. Deploy.
+4. Deploy. Build and output settings need no changes; `vercel.json` already pins
+   `npm run build` and `dist`.
 
 **Never add a private key to Vercel.** Anything prefixed `VITE_` is compiled into the
-public JavaScript bundle. The deployer key lives only in your local `.env` and is used
-only by `scripts/`.
+public JavaScript bundle, and even without that prefix a host env var is one misconfigured
+build step away from being printed in a log. The deployer key belongs only in your local
+`.env`, which `scripts/` reads and Vite never sees.
+
+Without `VITE_CONTRACT_ADDRESS` the build still succeeds — the app just renders a "no
+contract address configured" notice instead of the registry.
 
 ---
 
