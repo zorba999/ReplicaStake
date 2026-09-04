@@ -1,0 +1,13 @@
+node_modules
+__pycache__
+*.pyc
+dist
+.vercel
+.DS_Store
+*.local
+
+# secrets - never commit
+.env
+.env.*
+!.env.example
+tsconfig.tsbuildinfo

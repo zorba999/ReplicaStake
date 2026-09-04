@@ -1,0 +1,29 @@
+{
+  "name": "replicastake",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "An on-chain court for computational reproducibility, built on GenLayer StudioNet.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b --noEmit && vite build",
+    "preview": "vite preview",
+    "deploy:contract": "node scripts/deploy.mjs",
+    "seed": "node scripts/seed.mjs",
+    "lint:contract": "genvm-lint check contracts/replica_stake.py"
+  },
+  "dependencies": {
+    "genlayer-js": "^1.1.8",
+    "gsap": "^3.13.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "dotenv": "^16.4.7",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}
