@@ -1,4 +1,5 @@
 import { createClient } from "genlayer-js";
+import { CalldataAddress } from "genlayer-js/types";
 
 import { CHAIN, CONTRACT_ADDRESS } from "./config";
 import type { Attempt, Balance, Claim, Stats } from "./types";
@@ -30,6 +31,22 @@ async function read<T>(functionName: string, args: unknown[] = []): Promise<T> {
   return result as T;
 }
 
+/**
+ * GenLayer calldata has a dedicated address type, and the encoder does not
+ * promote a hex string into it — a bare "0x…" is sent as a `str` and any
+ * method typed `who: Address` rejects it. Every address argument has to go
+ * through here.
+ */
+export function toAddressArg(address: string): CalldataAddress {
+  const hex = address.replace(/^0x/, "");
+  if (hex.length !== 40) throw new Error(`Not a 20-byte address: ${address}`);
+  const bytes = new Uint8Array(20);
+  for (let i = 0; i < 20; i += 1) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return new CalldataAddress(bytes);
+}
+
 export const api = {
   stats: () => read<Stats>("get_stats"),
   claims: (offset = 0, limit = 60) =>
@@ -37,7 +54,7 @@ export const api = {
   claim: (claimId: string) => read<Claim>("get_claim", [claimId]),
   attempts: (claimId: string) =>
     read<{ claim_id: string; items: Attempt[] }>("get_attempts", [claimId]),
-  balance: (address: string) => read<Balance>("get_balance", [address]),
+  balance: (address: string) => read<Balance>("get_balance", [toAddressArg(address)]),
 };
 
 /**

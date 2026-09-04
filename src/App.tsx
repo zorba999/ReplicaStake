@@ -90,7 +90,7 @@ export default function App() {
           onRefresh={() => void registry.refreshAll()}
         />
         <RegisterForm
-          credits={registry.balance?.credits ?? "0"}
+          credits={registry.balance?.credits ?? ""}
           faucetUsed={Boolean(registry.balance?.faucet_used)}
           onFaucet={() => void claimFaucet()}
           onRegistered={() => void registry.refreshAll()}

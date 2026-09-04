@@ -138,6 +138,11 @@ blocks writes rather than letting them fail at the RPC.
 Reads never need a wallet: `src/lib/contract.ts` keeps a separate account-less client so
 the registry is fully browsable before anyone connects.
 
+**Address arguments.** GenLayer calldata has its own address type and the encoder does not
+promote a hex string into it — passing `"0x…"` to a method typed `who: Address` sends a
+`str` and the call fails. Every address argument goes through `toAddressArg()`, which wraps
+the 20 raw bytes in `CalldataAddress`.
+
 ---
 
 ## Contract design notes

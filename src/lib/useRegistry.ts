@@ -57,8 +57,13 @@ export function useRegistry(address: string) {
     try {
       const next = await api.balance(address);
       if (mounted.current) setBalance(next);
-    } catch {
-      /* a missing balance is not worth shouting about */
+    } catch (caught) {
+      // Never swallow this: a silent failure here reads to the user as
+      // "the faucet did nothing", which is the wrong thing to debug.
+      if (mounted.current) setBalance(null);
+      logErr(
+        `balance read failed: ${caught instanceof Error ? caught.message : String(caught)}`,
+      );
     }
   }, [address]);
 

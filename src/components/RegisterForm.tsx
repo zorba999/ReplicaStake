@@ -106,7 +106,11 @@ export default function RegisterForm({ onRegistered, credits, faucetUsed, onFauc
     }
   };
 
-  const short = Number(credits || 0) < Number(form.stake || 0);
+  // An empty string means "balance not read yet", which is not the same as
+  // zero — blocking on an unknown balance is how you end up telling someone
+  // they have no credits right after the faucet said otherwise.
+  const balanceKnown = credits !== "";
+  const short = balanceKnown && Number(credits) < Number(form.stake || 0);
 
   return (
     <section className="section" ref={rootRef} id="stake">
@@ -195,7 +199,7 @@ export default function RegisterForm({ onRegistered, credits, faucetUsed, onFauc
           <div className="field" style={{ maxWidth: 220 }}>
             <label htmlFor="stake">stake ({CREDIT_SYMBOL})</label>
             <input id="stake" value={form.stake} onChange={set("stake")} />
-            <small>minimum 100 · you hold {credits || "0"}</small>
+            <small>minimum 100 · you hold {balanceKnown ? credits : "—"}</small>
           </div>
 
           {error && <div className="form__error">{error}</div>}
