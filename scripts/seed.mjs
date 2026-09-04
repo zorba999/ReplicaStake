@@ -1,7 +1,7 @@
 /**
- * Seeds the deployed contract with four live claims and their replication
- * attempts: three that exercise every verdict path, plus one deliberately left
- * unadjudicated so the UI has a real consensus round to run.
+ * Seeds the deployed contract with six live claims and their replication
+ * attempts: three that exercise every verdict path, plus three deliberately
+ * left unadjudicated so several visitors can each run a real consensus round.
  *
  *   npm run seed                  register + submit only (fast, no LLM calls)
  *   npm run seed -- --adjudicate  also run consensus (slow; skips the held one)
@@ -133,6 +133,56 @@ const CLAIMS = [
       notes:
         "Reporting the val loss figure published in the pinned baselines table " +
         "for the gpt2-medium 350M model at this commit.",
+      expect: "REPRODUCED",
+    },
+  },
+  {
+    id: `owt-124m-train-${RUN}`,
+    title: "nanoGPT — GPT-2 124M training loss on OpenWebText",
+    paper_url: "https://github.com/karpathy/nanoGPT#baselines",
+    locator: "Baselines table, row 'gpt2 124M', column 'train loss'",
+    metric: "training loss on OpenWebText (lower is better)",
+    claimed_value: "3.11",
+    tolerance: "0.05",
+    repo_url: "https://github.com/karpathy/nanoGPT",
+    commit_sha: NANOGPT_SHA,
+    protocol:
+      "Prepare OpenWebText with data/openwebtext/prepare.py, evaluate the " +
+      "gpt2 (124M) checkpoint with `python train.py eval_gpt2.py`, and report " +
+      "the single 'train loss' figure from the baselines table. One seed.",
+    stake: "350",
+    hold: true,
+    attempt: {
+      evidence_url: `${NANOGPT_RAW}/README.md`,
+      metrics_url: "",
+      notes:
+        "Reporting the train loss figure published in the pinned baselines " +
+        "table for the gpt2 124M model at this commit.",
+      expect: "REPRODUCED",
+    },
+  },
+  {
+    id: `owt-350m-train-${RUN}`,
+    title: "nanoGPT — GPT-2 medium 350M training loss on OpenWebText",
+    paper_url: "https://github.com/karpathy/nanoGPT#baselines",
+    locator: "Baselines table, row 'gpt2-medium 350M', column 'train loss'",
+    metric: "training loss on OpenWebText (lower is better)",
+    claimed_value: "2.85",
+    tolerance: "0.05",
+    repo_url: "https://github.com/karpathy/nanoGPT",
+    commit_sha: NANOGPT_SHA,
+    protocol:
+      "Prepare OpenWebText with data/openwebtext/prepare.py, evaluate the " +
+      "gpt2-medium (350M) checkpoint with `python train.py eval_gpt2_medium.py`, " +
+      "and report the single 'train loss' figure from the baselines table. One seed.",
+    stake: "450",
+    hold: true,
+    attempt: {
+      evidence_url: `${NANOGPT_RAW}/README.md`,
+      metrics_url: "",
+      notes:
+        "Reporting the train loss figure published in the pinned baselines " +
+        "table for the gpt2-medium 350M model at this commit.",
       expect: "REPRODUCED",
     },
   },
