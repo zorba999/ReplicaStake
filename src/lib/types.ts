@@ -1,7 +1,8 @@
 /** Every view on the contract returns strings so nothing is lost in calldata. */
 
 export type ClaimStatus = "OPEN" | "REPRODUCED" | "BROKEN" | "CLOSED";
-export type Verdict = "" | "REPRODUCED" | "FAILED" | "INVALID_ATTEMPT";
+export type Verdict = "" | "REPRODUCED" | "FAILED" | "INVALID_ATTEMPT" | "VOID";
+export type Provenance = "" | "PINNED_BLOB" | "CI_RUN";
 
 export interface Claim {
   claim_id: string;
@@ -39,6 +40,10 @@ export interface Attempt {
   confidence: string;
   reasoning: string;
   settled: boolean;
+  /** How the evidence is bound to the registered commit. */
+  provenance: Provenance;
+  provenance_repo: string;
+  provenance_ref: string;
 }
 
 export interface Stats {
@@ -48,6 +53,7 @@ export interface Stats {
   reproduced: string;
   failed: string;
   invalid: string;
+  void: string;
   audited: string;
   locked: string;
   treasury: string;

@@ -1,10 +1,10 @@
 {
   "network": "studionet",
   "chainId": 61999,
-  "address": "0xC0Ef3484ef7c0418BFe22525D95011911d213C23",
+  "address": "0x5A847C2FE14eA9490D98887AF0aaDd369B6Bcfb2",
   "deployer": "0x4e00Eda68DaC53c98f524CDcCfEb2DC502753B9f",
-  "txHash": "0xe687b184dd497129282f999ba1d8160214c83b0a4c328d8e8458b3b89a77ecdf",
+  "txHash": "0xde573469a5b831ed0f2817fe6e9ab06d6efee14884a0ab043ee3a58ba0b3f1ac",
   "contract": "contracts/replica_stake.py",
   "runner": "# { \"Depends\": \"py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6\" }",
-  "deployedAt": "2026-09-04T14:11:16.324Z"
+  "deployedAt": "2026-09-07T13:33:17.609Z"
 }

@@ -12,6 +12,12 @@ const VERDICT_LABEL: Record<string, string> = {
   REPRODUCED: "reproduced",
   FAILED: "failed",
   INVALID_ATTEMPT: "invalid attempt",
+  VOID: "void",
+};
+
+const PROVENANCE_LABEL: Record<string, string> = {
+  PINNED_BLOB: "pinned to the registered commit",
+  CI_RUN: "CI run bound to the registered commit",
 };
 
 interface Props {
@@ -281,6 +287,13 @@ export default function ClaimDrawer({ claimId, onClose, onSettled }: Props) {
                     </div>
                   </div>
 
+                  {attempt.provenance && (
+                    <p className="tag" style={{ marginTop: 8 }}>
+                      {PROVENANCE_LABEL[attempt.provenance] ?? attempt.provenance} ·{" "}
+                      {attempt.provenance_repo} @ {attempt.provenance_ref.slice(0, 12)}
+                    </p>
+                  )}
+
                   {attempt.notes && <p className="attempt__reason">{attempt.notes}</p>}
 
                   {attempt.verdict ? (
@@ -353,11 +366,14 @@ export default function ClaimDrawer({ claimId, onClose, onSettled }: Props) {
                         id="evidence"
                         value={evidenceUrl}
                         onChange={(event) => setEvidenceUrl(event.target.value)}
-                        placeholder="https://raw.githubusercontent.com/owner/repo/<sha>/run.log"
+                        placeholder={`https://raw.githubusercontent.com/owner/repo/${claim.commit_sha}/results.log`}
                       />
                       <small>
-                        Must be public and immutable — a CI run page, a raw log pinned to a
-                        commit, or a metrics artifact. Validators fetch this themselves.
+                        Only two forms are accepted, because a payout must never rest on a
+                        document you can edit: a <b>raw.githubusercontent.com</b> blob pinned
+                        to the registered commit <code>{claim.commit_sha.slice(0, 7)}</code>,
+                        or a <b>GitHub Actions run</b> whose head_sha is that commit. Anything
+                        else is rejected before your bond is taken.
                       </small>
                     </div>
                     <div className="field">
@@ -366,8 +382,13 @@ export default function ClaimDrawer({ claimId, onClose, onSettled }: Props) {
                         id="metrics"
                         value={metricsUrl}
                         onChange={(event) => setMetricsUrl(event.target.value)}
-                        placeholder="https://…/metrics.json"
+                        placeholder="https://raw.githubusercontent.com/owner/repo/<sha>/metrics.json"
                       />
+                      <small>
+                        Must sit in the same repository as the evidence. If it is at a
+                        different commit, that commit has to have been written by the Actions
+                        bot — hand-committed numbers do not count.
+                      </small>
                     </div>
                     <div className="field">
                       <label htmlFor="notes">what you ran</label>

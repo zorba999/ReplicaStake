@@ -961,6 +961,10 @@ button {
   color: var(--stamp-amber);
 }
 
+.stamp--void {
+  color: var(--ink-ghost);
+}
+
 /* ------------------------------------------------------------------ form --- */
 
 .form {

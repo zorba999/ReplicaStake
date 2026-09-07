@@ -7,8 +7,10 @@ table — together with the protocol needed to get it. A replicator runs the exp
 off-chain in public CI and posts the log. GenLayer validators then independently fetch
 that log and settle the bond.
 
-The contract makes three judgments that no deterministic chain and no oracle can make
-on its own:
+Evidence only counts if the replicator cannot have authored it: a blob pinned to the
+registered commit, or a GitHub Actions run whose `head_sha` is that commit. Given evidence
+that binds, the contract then makes three judgments that no deterministic chain and no
+oracle can make on its own:
 
 1. **Did the replicator follow the declared protocol?** (`YES` / `PARTIAL` / `NO`)
 2. **What number did the run actually produce?**
@@ -33,7 +35,7 @@ That is the whole reason this is a GenLayer app rather than a Solidity app.
 | | |
 |---|---|
 | Network | `studionet` (chain id `61999`, gasless) |
-| Contract | `0xC0Ef3484ef7c0418BFe22525D95011911d213C23` |
+| Contract | `0x5A847C2FE14eA9490D98887AF0aaDd369B6Bcfb2` |
 | Source | [`contracts/replica_stake.py`](contracts/replica_stake.py) |
 | Runner | `py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6` (pinned) |
 
@@ -41,13 +43,18 @@ The seeded registry holds real claims against
 [karpathy/nanoGPT](https://github.com/karpathy/nanoGPT) pinned at commit `3adf61e`. Every
 evidence URL is genuinely public and genuinely fetched by the validators — nothing in the
 demo is mocked. Adjudicated claims cover all three verdict paths and each reached
-`MAJORITY_AGREE`; one claim is left pending so you can run a consensus round yourself
-from the UI and watch the stamp land.
+`MAJORITY_AGREE`; three claims are left pending so several visitors can each run a
+consensus round from the UI and watch the stamp land.
 
-One of those verdicts is worth reading. An early attempt described a fresh training run
-while pointing at the project README, and the validators returned `INVALID_ATTEMPT` —
-correctly, because a README is documentation, not a run log. That is the evidence-integrity
-step doing exactly its job, and it is the reason the third verdict exists.
+Two of those verdicts are worth reading:
+
+- An attempt described a fresh training run while pointing at the project README. The
+  validators returned `INVALID_ATTEMPT` — correctly, because a README is documentation,
+  not a run log.
+- A **provenance control** claim submits a genuine, green GitHub Actions run from an
+  unrelated repository. The contract rejects it on the GitHub API response, before any
+  language model is asked to read anything: the run executed a different commit than the
+  one the claim is registered against.
 
 ---
 
@@ -57,7 +64,7 @@ step doing exactly its job, and it is the reason the third verdict exists.
 npm install
 cp .env.example .env      # then paste your StudioNet key into DEPLOYER_PRIVATE_KEY
 npm run deploy:contract   # writes deployments/studionet.json + VITE_CONTRACT_ADDRESS
-npm run seed              # four claims + attempts (add --adjudicate to settle them too)
+npm run seed              # seven claims + attempts (add --adjudicate to settle them too)
 npm run dev
 ```
 
@@ -72,10 +79,11 @@ between transactions.
 | `npm run dev` | Vite dev server on `:5173` |
 | `npm run build` | Typecheck + production build into `dist/` |
 | `npm run deploy:contract` | Deploys the contract, verifies it with a `get_stats()` read, records the address |
-| `npm run seed` | Registers four claims and their attempts |
+| `npm run seed` | Registers seven claims and their attempts |
 | `npm run seed -- --adjudicate` | Also runs consensus on each one (slow; skips the held claim) |
 | `npm run seed -- --only=3` | Seeds a single claim by index |
 | `npm run lint:contract` | `genvm-lint check` — lint + SDK semantic validation |
+| `npm run test:terminal` | Regression test for the terminal-state guard, against the live contract |
 
 ---
 
@@ -91,7 +99,7 @@ The app is a static Vite SPA, so it deploys with no adapter and no server runtim
    Keep exactly one:
 
    ```
-   VITE_CONTRACT_ADDRESS = 0xC0Ef3484ef7c0418BFe22525D95011911d213C23
+   VITE_CONTRACT_ADDRESS = 0x5A847C2FE14eA9490D98887AF0aaDd369B6Bcfb2
    ```
 
 4. Deploy. Build and output settings need no changes; `vercel.json` already pins
@@ -146,6 +154,43 @@ the 20 raw bytes in `CalldataAddress`.
 ---
 
 ## Contract design notes
+
+### Evidence provenance
+
+The trust gap in the first version was that payout-bearing evidence was any URL the
+replicator chose. That let a challenger fabricate a log on a page they controlled and
+collect 70% of the author's stake. Evidence is now only accepted in two forms, neither of
+which the submitter can author or alter after the fact:
+
+| Tier | Form | Why it binds |
+|---|---|---|
+| `PINNED_BLOB` | `raw.githubusercontent.com/<owner>/<repo>/<sha>/<path>` where the sha **is** the registered commit | Git is content-addressed, so this can only ever serve the exact tree that was registered. Not even the author can change it afterwards. |
+| `CI_RUN` | `github.com/<owner>/<repo>/actions/runs/<id>` | Verified at adjudication against the public GitHub API: the run must be `completed`, have a usable conclusion, and its `head_sha` must equal the registered commit. The run may live in a fork — what is pinned is the code that executed, not who executed it. |
+
+Anything else is rejected **deterministically at submission**, before a bond is taken and
+before a validator round is spent. An optional metrics artifact may sit at a different
+commit only when the GitHub commits API shows that commit was written by the Actions bot
+of the same repository, so run output stays machine-authored rather than hand-edited.
+
+A provenance failure is a **verdict**, not a transaction error: the attempt settles as
+`INVALID_ATTEMPT` and the challenger loses half their bond. Failing the transaction
+instead would leave the bond locked and cost the honest party nothing.
+
+`provenance_ok` is part of the consensus comparison, because chain of custody is a
+deterministic fact — validators disagreeing about it means one of them read a different
+history.
+
+### Terminal claim states
+
+`BROKEN` and `CLOSED` are terminal. `REPRODUCED` deliberately is not: a later attempt may
+still break a claim an earlier one confirmed.
+
+Before this was enforced, two attempts could be pending at once, and settling them in the
+wrong order let a stale `REPRODUCED` overwrite a claim that had already been slashed —
+laundering a broken claim back to clean. Now an attempt whose claim has reached a terminal
+state is voided before any consensus round: the bond is returned in full, the claim state
+is untouched, and the attempt is recorded as `VOID`. The same guard is repeated inside
+`_settle()` so no future caller can route around it.
 
 ### Which equivalence principle, and why
 
@@ -232,9 +277,17 @@ src/components/              page sections and the claim drawer
 
 ## Known limits
 
-- **Evidence can be fabricated.** The contract prefers CI runs and pinned raw artifacts
-  because those are hard to rewrite, but nothing here proves a GPU ever ran. The design
-  raises the cost of lying; it does not eliminate it.
+- **Provenance binds the code, not the hardware.** A verified `CI_RUN` proves the
+  registered commit was executed by GitHub Actions and concluded; it does not prove a GPU
+  ran, or that the workflow measured what it claims to measure. The remaining surface is
+  the workflow definition itself, which is why the protocol text is what validators judge
+  compliance against.
+- **GitHub Actions logs need auth.** The run object is public, but log and artifact
+  downloads are not, so the numeric payload comes from a pinned blob or a bot-committed
+  metrics file rather than the raw log stream.
+- **The GitHub API is rate limited** to 60 requests/hour per IP unencumbered by a token.
+  Every validator in a round makes its own call, so `CI_RUN` evidence is the expensive
+  path; `PINNED_BLOB` evidence makes no API call at all.
 - **No appeals in this build.** StudioNet's chain config carries no appeals or fee-manager
   contract, so `client.appealTransaction` is unavailable. On Asimov the appeal path would
   be a natural addition to the drawer.

@@ -5,8 +5,11 @@ ReplicaStake — an on-chain court for computational reproducibility.
 An author stakes credits behind one concrete numeric claim from a paper
 ("Table 3, row Ours, column CIFAR-10 = 94.2 accuracy") plus the exact protocol
 needed to reproduce it. A replicator runs the experiment off-chain in public CI
-and submits the evidence URL. GenLayer validators then independently fetch that
-evidence and judge three things no deterministic contract can judge:
+and submits the evidence URL. That URL only counts if it carries provenance the
+replicator cannot forge: a blob pinned to the registered commit, or a GitHub
+Actions run whose head_sha is that commit. GenLayer validators then
+independently fetch the evidence and judge three things no deterministic
+contract can judge:
 
   1. did the replicator actually follow the declared protocol?
   2. what number did the run actually produce?
@@ -40,10 +43,29 @@ VERDICT_FAILED = "FAILED"
 VERDICT_INVALID = "INVALID_ATTEMPT"
 VERDICTS = (VERDICT_REPRODUCED, VERDICT_FAILED, VERDICT_INVALID)
 
+# Not a consensus outcome: the settlement given to an attempt that was still in
+# flight when its claim reached a terminal state.
+VERDICT_VOID = "VOID"
+
 CLAIM_OPEN = "OPEN"
 CLAIM_REPRODUCED = "REPRODUCED"
 CLAIM_BROKEN = "BROKEN"
 CLAIM_CLOSED = "CLOSED"
+
+# A slashed or withdrawn claim is final. REPRODUCED deliberately is not: a later
+# attempt may still break a claim that an earlier one confirmed.
+TERMINAL_STATUSES = (CLAIM_BROKEN, CLAIM_CLOSED)
+
+# Evidence provenance tiers. Both are outside the replicator's control, which is
+# the whole point: a payout must never rest on a document the claimant can edit.
+PROV_PINNED = "PINNED_BLOB"  # git content-addressed at the registered commit
+PROV_CI_RUN = "CI_RUN"  # a GitHub Actions run, bound to the registered commit
+
+GITHUB_API_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "ReplicaStake-IntelligentContract",
+}
+CI_BOT_LOGINS = ("github-actions[bot]", "github-actions")
 
 ATTO = 10**18
 FAUCET_ATTO = 10_000 * ATTO
@@ -106,6 +128,9 @@ class Attempt:
     confidence: u256
     reasoning: str
     settled: bool
+    provenance: str  # PINNED_BLOB | CI_RUN
+    provenance_repo: str  # "<owner>/<repo>" the evidence was taken from
+    provenance_ref: str  # the commit sha, or the Actions run id
 
 
 # --------------------------------------------------------------------------
@@ -149,6 +174,183 @@ def _fetch_text(url: str) -> str:
     if not isinstance(rendered, str) or len(rendered.strip()) < 40:
         raise gl.vm.UserError(f"{ERROR_TRANSIENT} evidence page rendered empty")
     return _clip(rendered)
+
+
+# --------------------------------------------------------------------------
+# Evidence provenance.
+#
+# The trust gap this closes: without a binding rule, a replicator can point the
+# contract at any page they control, fabricate a number, and collect 70% of the
+# author's stake. So evidence is only accepted in forms whose content the
+# submitter cannot author or alter after the fact:
+#
+#   PINNED_BLOB  raw.githubusercontent.com/<owner>/<repo>/<sha>/<path> where the
+#                sha IS the registered commit. Git is content-addressed, so this
+#                can only ever serve the exact tree the author registered - not
+#                even the author can change it afterwards.
+#
+#   CI_RUN       a GitHub Actions run, verified at adjudication against the
+#                public API: the run must be completed and its head_sha must
+#                equal the registered commit. The run may live in a fork, which
+#                is how honest replication works; what is pinned is the code
+#                that executed, not who executed it.
+#
+# An optional metrics artifact may sit at a different commit only when that
+# commit was written by the Actions bot of the same repository, so run output
+# stays machine-authored rather than hand-edited.
+# --------------------------------------------------------------------------
+def _match_raw_blob(url: str):
+    import re
+
+    match = re.match(
+        r"^https://raw\.githubusercontent\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/([0-9a-fA-F]{40})/(.+)$",
+        url.strip(),
+    )
+    return match.groups() if match else None
+
+
+def _match_ci_run(url: str):
+    import re
+
+    text = url.strip()
+    for pattern in (
+        r"^https://(?:www\.)?github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/actions/runs/([0-9]+)",
+        r"^https://api\.github\.com/repos/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/actions/runs/([0-9]+)",
+    ):
+        match = re.match(pattern, text)
+        if match:
+            return match.groups()
+    return None
+
+
+def _classify_evidence(url: str, commit_sha: str) -> dict:
+    """Deterministic gate at submission time, so unbound evidence never costs
+    anyone an adjudication round."""
+    blob = _match_raw_blob(url)
+    if blob:
+        owner, repo, sha, _path = blob
+        if sha.lower() != commit_sha.lower():
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} pinned evidence must sit at the registered commit "
+                f"{commit_sha[:7]}, but this URL points at {sha[:7]}"
+            )
+        return {"kind": PROV_PINNED, "owner": owner, "repo": repo, "ref": sha.lower()}
+
+    run = _match_ci_run(url)
+    if run:
+        owner, repo, run_id = run
+        return {"kind": PROV_CI_RUN, "owner": owner, "repo": repo, "ref": run_id}
+
+    raise gl.vm.UserError(
+        f"{ERROR_EXPECTED} evidence must carry provenance: either a GitHub Actions run "
+        f"(github.com/<owner>/<repo>/actions/runs/<id>) or a raw.githubusercontent.com "
+        f"blob pinned to the registered commit {commit_sha[:7]}"
+    )
+
+
+def _classify_metrics(url: str, owner: str, repo: str) -> dict:
+    """The optional payload artifact: a content-addressed blob in the same
+    repository as the evidence."""
+    if not url.strip():
+        return {"ref": "", "owner": "", "repo": ""}
+    blob = _match_raw_blob(url)
+    if not blob:
+        raise gl.vm.UserError(
+            f"{ERROR_EXPECTED} the metrics artifact must be a raw.githubusercontent.com "
+            f"blob pinned to a commit"
+        )
+    m_owner, m_repo, sha, _path = blob
+    if m_owner.lower() != owner.lower() or m_repo.lower() != repo.lower():
+        raise gl.vm.UserError(
+            f"{ERROR_EXPECTED} the metrics artifact must live in {owner}/{repo}, the "
+            f"same repository as the evidence"
+        )
+    return {"ref": sha.lower(), "owner": m_owner, "repo": m_repo}
+
+
+def _github_json(url: str) -> dict:
+    res = gl.nondet.web.get(url, headers=GITHUB_API_HEADERS)
+    if res.status == 403:
+        raise gl.vm.UserError(f"{ERROR_TRANSIENT} GitHub API rate limit reached")
+    if res.status >= 500:
+        raise gl.vm.UserError(f"{ERROR_TRANSIENT} GitHub API unavailable")
+    if res.status == 404:
+        return {}
+    if res.status >= 400:
+        raise gl.vm.UserError(f"{ERROR_EXTERNAL} GitHub API returned {res.status}")
+    body = (res.body or b"").decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(body)
+    except Exception:
+        raise gl.vm.UserError(f"{ERROR_EXTERNAL} GitHub API returned unparseable JSON")
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _check_provenance(
+    kind: str,
+    owner: str,
+    repo: str,
+    ref: str,
+    commit_sha: str,
+    metrics_ref: str,
+    metrics_owner: str,
+    metrics_repo: str,
+) -> dict:
+    """Runs inside the nondet block. Returns a rejection rather than raising:
+    unbound evidence is the replicator's fault, so it should cost them their
+    bond as INVALID_ATTEMPT instead of failing the transaction."""
+    if kind == PROV_CI_RUN:
+        run = _github_json(f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{ref}")
+        if not run:
+            return {"ok": False, "reason": f"CI run {ref} does not exist in {owner}/{repo}."}
+        head_sha = str(run.get("head_sha", "")).lower()
+        status = str(run.get("status", ""))
+        conclusion = str(run.get("conclusion", ""))
+        if head_sha != commit_sha.lower():
+            return {
+                "ok": False,
+                "reason": (
+                    f"Run provenance mismatch: the workflow executed commit "
+                    f"{head_sha[:7] or '(none)'}, but the claim is registered against "
+                    f"{commit_sha[:7]}. Evidence must come from a run of the pinned code."
+                ),
+            }
+        if status != "completed":
+            return {"ok": False, "reason": f"CI run {ref} is still {status or 'unknown'}."}
+        if conclusion not in ("success", "neutral"):
+            return {
+                "ok": False,
+                "reason": f"CI run {ref} concluded '{conclusion}', so it produced no usable result.",
+            }
+
+    # A metrics artifact at any other commit is only trustworthy when a machine
+    # wrote it; anything hand-committed is back under the replicator's control.
+    if metrics_ref and metrics_ref != commit_sha.lower():
+        commit = _github_json(
+            f"https://api.github.com/repos/{metrics_owner}/{metrics_repo}/commits/{metrics_ref}"
+        )
+        if not commit:
+            return {
+                "ok": False,
+                "reason": (
+                    f"Metrics commit {metrics_ref[:7]} does not exist in "
+                    f"{metrics_owner}/{metrics_repo}."
+                ),
+            }
+        author = commit.get("author") or {}
+        committer = commit.get("committer") or {}
+        logins = (str(author.get("login", "")), str(committer.get("login", "")))
+        if not any(login in CI_BOT_LOGINS for login in logins):
+            return {
+                "ok": False,
+                "reason": (
+                    f"Metrics commit {metrics_ref[:7]} was written by "
+                    f"{logins[1] or logins[0] or 'an unknown account'}, not the Actions bot. "
+                    f"Run output has to be machine-committed to count."
+                ),
+            }
+
+    return {"ok": True, "reason": ""}
 
 
 def _extract_json(raw: typing.Any) -> dict:
@@ -560,8 +762,12 @@ class ReplicaStake(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} claim is not accepting attempts")
         if claim.author == sender:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} an author cannot replicate their own claim")
-        if not evidence_url.startswith("http"):
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} evidence_url must be an http(s) URL")
+        # Provenance is checked before any money moves, and before any
+        # validator spends a round on evidence that could never be binding.
+        provenance = _classify_evidence(evidence_url, str(claim.commit_sha))
+        # Validated for shape and repository here; the commit itself is verified
+        # against GitHub at adjudication, where a web call is allowed.
+        _classify_metrics(metrics_url, provenance["owner"], provenance["repo"])
 
         atto_bond = int(claim.atto_stake) * BOND_BPS // 10_000
         self._debit(sender, atto_bond)
@@ -582,6 +788,9 @@ class ReplicaStake(gl.Contract):
             confidence=u256(0),
             reasoning="",
             settled=False,
+            provenance=provenance["kind"],
+            provenance_repo=f"{provenance['owner']}/{provenance['repo']}",
+            provenance_ref=provenance["ref"],
         )
         self.attempt_ids.append(attempt_id)
         claim.attempt_ids.append(attempt_id)
@@ -599,6 +808,21 @@ class ReplicaStake(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} attempt already adjudicated")
         claim = self.claims[attempt.claim_id]
 
+        # An attempt that was still in flight when the claim was slashed or
+        # withdrawn must not be able to relabel a settled claim or draw from a
+        # stake that is already gone. Void it here, before any consensus round:
+        # there is nothing left for validators to decide.
+        if str(claim.status) in TERMINAL_STATUSES:
+            attempt.verdict = VERDICT_VOID
+            attempt.protocol_followed = ""
+            attempt.confidence = u256(0)
+            attempt.reasoning = (
+                f"Claim reached the terminal state {claim.status} before this attempt was "
+                f"adjudicated. No verdict was formed and the bond was returned in full."
+            )
+            self._settle(attempt_id)
+            return VERDICT_VOID
+
         # Snapshot storage into plain locals — a nondet block cannot touch storage.
         title = str(claim.title)
         paper_url = str(claim.paper_url)
@@ -612,8 +836,39 @@ class ReplicaStake(gl.Contract):
         evidence_url = str(attempt.evidence_url)
         metrics_url = str(attempt.metrics_url)
         notes = str(attempt.notes)
+        prov_kind = str(attempt.provenance)
+        prov_owner, _, prov_repo = str(attempt.provenance_repo).partition("/")
+        prov_ref = str(attempt.provenance_ref)
+        metrics_parts = _match_raw_blob(metrics_url) if metrics_url else None
+        metrics_owner = metrics_parts[0] if metrics_parts else ""
+        metrics_repo = metrics_parts[1] if metrics_parts else ""
+        metrics_ref = metrics_parts[2].lower() if metrics_parts else ""
 
         def leader_fn() -> dict:
+            # Provenance first: if the artifact is not bound to the registered
+            # commit there is nothing worth reading, and no reason to pay for a
+            # language model to read it.
+            provenance = _check_provenance(
+                prov_kind,
+                prov_owner,
+                prov_repo,
+                prov_ref,
+                commit_sha,
+                metrics_ref,
+                metrics_owner,
+                metrics_repo,
+            )
+            if not provenance["ok"]:
+                return {
+                    "verdict": VERDICT_INVALID,
+                    "observed_value": "",
+                    "delta": "",
+                    "protocol_followed": "NO",
+                    "confidence": 100,
+                    "reasoning": provenance["reason"][:600],
+                    "provenance_ok": False,
+                }
+
             evidence = _fetch_text(evidence_url)
             metrics_blob = _fetch_text(metrics_url) if metrics_url else ""
             raw = gl.nondet.exec_prompt(
@@ -633,7 +888,9 @@ class ReplicaStake(gl.Contract):
                 ),
                 response_format="json",
             )
-            return _normalise_adjudication(raw, claimed_value)
+            result = _normalise_adjudication(raw, claimed_value)
+            result["provenance_ok"] = True
+            return result
 
         def validator_fn(leaders_res: gl.vm.Result) -> bool:
             # Re-do the work first: if the same deterministic failure hits us,
@@ -645,6 +902,10 @@ class ReplicaStake(gl.Contract):
             if not isinstance(theirs, dict):
                 return False
             if str(theirs.get("verdict", "")) != mine["verdict"]:
+                return False
+            # Provenance is a deterministic fact, so any disagreement about it
+            # means one of us read a different chain of custody.
+            if bool(theirs.get("provenance_ok", True)) != bool(mine["provenance_ok"]):
                 return False
             # Only the NO boundary matters: it is what flips fault to the replicator.
             leader_blocked = str(theirs.get("protocol_followed", "")) == "NO"
@@ -677,6 +938,16 @@ class ReplicaStake(gl.Contract):
 
         bond = int(attempt.atto_bond)
         verdict = str(attempt.verdict)
+
+        # Defence in depth for the same rule adjudicate() enforces: a terminal
+        # claim can never be repriced or relabelled by a late attempt. The bond
+        # goes back untouched because the replicator did nothing wrong.
+        if str(claim.status) in TERMINAL_STATUSES:
+            self._credit(attempt.replicator, bond)
+            self.total_locked_atto = u256(int(self.total_locked_atto) - bond)
+            self._bump("verdict_void")
+            attempt.settled = True
+            return
 
         if verdict == VERDICT_INVALID:
             burnt = bond * INVALID_BURN_BPS // 10_000
@@ -794,6 +1065,7 @@ class ReplicaStake(gl.Contract):
             "reproduced": str(int(self.counters.get("verdict_reproduced", u256(0)))),
             "failed": str(int(self.counters.get("verdict_failed", u256(0)))),
             "invalid": str(int(self.counters.get("verdict_invalid", u256(0)))),
+            "void": str(int(self.counters.get("verdict_void", u256(0)))),
             "audited": str(int(self.counters.get("protocols_audited", u256(0)))),
             "locked": str(int(self.total_locked_atto) // ATTO),
             "treasury": str(int(self.treasury_atto) // ATTO),
@@ -874,4 +1146,7 @@ class ReplicaStake(gl.Contract):
             "confidence": str(int(attempt.confidence)),
             "reasoning": str(attempt.reasoning),
             "settled": bool(attempt.settled),
+            "provenance": str(attempt.provenance),
+            "provenance_repo": str(attempt.provenance_repo),
+            "provenance_ref": str(attempt.provenance_ref),
         }

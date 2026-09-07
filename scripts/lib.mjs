@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { createAccount, createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
+import { CalldataAddress } from "genlayer-js/types";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -51,6 +52,22 @@ export function requirePrivateKey(name = "DEPLOYER_PRIVATE_KEY") {
   return key;
 }
 
+/**
+ * GenLayer calldata has a dedicated address type and the encoder will not
+ * promote a hex string into it: a bare "0x..." is sent as a `str` and any
+ * method typed `who: Address` rejects it. Same helper as the frontend's
+ * toAddressArg(), because both sides hit this the moment they read a balance.
+ */
+export function toAddressArg(address) {
+  const hex = String(address).replace(/^0x/, "");
+  if (hex.length !== 40) throw new Error(`Not a 20-byte address: ${address}`);
+  const bytes = new Uint8Array(20);
+  for (let i = 0; i < 20; i += 1) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return new CalldataAddress(bytes);
+}
+
 export function makeClient(privateKey) {
   const account = createAccount(privateKey);
   const client = createClient({ chain: studionet, account });
@@ -89,28 +106,43 @@ function deepFind(node, key, depth = 0) {
 }
 
 export function readOutcome(receipt) {
+  // `result_name` is the authoritative, top-level consensus outcome. Reach for
+  // it before any deep search: a receipt carries one nested execution_result
+  // per validator, including ones that were cancelled once quorum was reached,
+  // and picking the first of those reports a failure that never happened.
+  const consensus =
+    receipt?.result_name || receipt?.resultName || deepFind(receipt, "result_name");
   const executionName =
     receipt?.txExecutionResultName ||
+    receipt?.execution_result ||
     deepFind(receipt, "execution_result") ||
     deepFind(receipt, "executionResult");
-  const consensus = receipt?.resultName || deepFind(receipt, "result_name");
-  const errorText =
-    deepFind(receipt, "error") ||
-    deepFind(receipt, "stderr") ||
-    deepFind(receipt, "err");
 
+  const noMajority = consensus === "MAJORITY_DISAGREE" || consensus === "NO_MAJORITY";
   const failed =
+    noMajority ||
     executionName === "FINISHED_WITH_ERROR" ||
     executionName === "NONDET_DISAGREE" ||
     executionName === "TIMEOUT" ||
-    consensus === "MAJORITY_DISAGREE" ||
-    consensus === "NO_MAJORITY";
+    consensus === "MAJORITY_TIMEOUT";
+
+  let error = "";
+  if (noMajority) {
+    error =
+      `validators did not converge (${consensus}` +
+      `${receipt?.num_of_rounds ? `, ${receipt.num_of_rounds} rounds` : ""}) — ` +
+      `re-run the transaction to trigger a fresh round`;
+  } else if (failed) {
+    error = String(
+      deepFind(receipt, "stderr") || deepFind(receipt, "error") || executionName || consensus,
+    );
+  }
 
   return {
     success: !failed,
     execution: executionName || "UNKNOWN",
     consensus: consensus || "UNKNOWN",
-    error: failed ? String(errorText || executionName || consensus) : "",
+    error,
   };
 }
 

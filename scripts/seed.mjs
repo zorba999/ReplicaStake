@@ -1,7 +1,8 @@
 /**
- * Seeds the deployed contract with six live claims and their replication
- * attempts: three that exercise every verdict path, plus three deliberately
- * left unadjudicated so several visitors can each run a real consensus round.
+ * Seeds the deployed contract with seven live claims and their replication
+ * attempts: three that exercise every verdict path, three deliberately left
+ * unadjudicated so several visitors can each run a real consensus round, and
+ * one negative control that proves the evidence-provenance rule fires.
  *
  *   npm run seed                  register + submit only (fast, no LLM calls)
  *   npm run seed -- --adjudicate  also run consensus (slow; skips the held one)
@@ -31,6 +32,10 @@ import {
 const NANOGPT_SHA = "3adf61e154c3fe3fca428ad6bc3818b27a3b8291";
 const NANOGPT_RAW = `https://raw.githubusercontent.com/karpathy/nanoGPT/${NANOGPT_SHA}`;
 const RUN = Date.now().toString(36);
+
+// A real completed run in an unrelated public repository, used only to prove
+// the provenance check fires against live GitHub data rather than a fixture.
+const CONTROL_RUN = {repo: "vitejs/vite", id: "34117180161"};
 
 const CLAIMS = [
   {
@@ -184,6 +189,35 @@ const CLAIMS = [
         "Reporting the train loss figure published in the pinned baselines " +
         "table for the gpt2-medium 350M model at this commit.",
       expect: "REPRODUCED",
+    },
+  },
+  {
+    // Negative control for the provenance rule. The evidence is a genuine,
+    // completed GitHub Actions run - it just executed a different repository at
+    // a different commit, which is exactly the shape of a forged replication.
+    // The contract rejects it on the GitHub API response, before any language
+    // model is asked to read anything.
+    id: `provenance-control-${RUN}`,
+    title: "Provenance control - a CI run that never executed the registered commit",
+    paper_url: "https://github.com/karpathy/nanoGPT#baselines",
+    locator: "Baselines table, row 'gpt2 124M', column 'val loss'",
+    metric: "validation loss on OpenWebText (lower is better)",
+    claimed_value: "3.12",
+    tolerance: "0.05",
+    repo_url: "https://github.com/karpathy/nanoGPT",
+    commit_sha: NANOGPT_SHA,
+    protocol:
+      "Run `python train.py config/train_gpt2.py` for the full 600k iterations " +
+      "and report the single 'val loss' figure for the 124M model. One seed, no " +
+      "hyperparameter changes.",
+    stake: "200",
+    attempt: {
+      evidence_url: `https://github.com/${CONTROL_RUN.repo}/actions/runs/${CONTROL_RUN.id}`,
+      metrics_url: "",
+      notes:
+        "Submitting a real, green CI run as proof of a replication it never " +
+        "performed. The run is authentic; its provenance is not.",
+      expect: "INVALID_ATTEMPT",
     },
   },
 ];

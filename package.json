@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "deploy:contract": "node scripts/deploy.mjs",
     "seed": "node scripts/seed.mjs",
-    "lint:contract": "genvm-lint check contracts/replica_stake.py"
+    "lint:contract": "genvm-lint check contracts/replica_stake.py",
+    "test:terminal": "node scripts/test-terminal-state.mjs"
   },
   "dependencies": {
     "genlayer-js": "^1.1.8",
