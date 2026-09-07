@@ -15,9 +15,12 @@ const VERDICT_LABEL: Record<string, string> = {
   VOID: "void",
 };
 
+// These name the evidence *tier*, not the outcome of checking it. An attempt
+// can be a CI_RUN and still be rejected because the run executed the wrong
+// commit, so the label must not assert that the binding held.
 const PROVENANCE_LABEL: Record<string, string> = {
-  PINNED_BLOB: "pinned to the registered commit",
-  CI_RUN: "CI run bound to the registered commit",
+  PINNED_BLOB: "commit-pinned blob",
+  CI_RUN: "GitHub Actions run",
 };
 
 interface Props {
